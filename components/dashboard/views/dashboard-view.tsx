@@ -134,12 +134,12 @@ export function DashboardView() {
                   <Legend />
                   <Bar 
                     dataKey="Asistencias" 
-                    fill="hsl(var(--primary))" 
+                    fill="#14b8a6" 
                     radius={[4, 4, 0, 0]}
                   />
                   <Bar 
                     dataKey="Ausencias" 
-                    fill="hsl(var(--destructive))" 
+                    fill="#fb7185" 
                     radius={[4, 4, 0, 0]}
                   />
                 </BarChart>
