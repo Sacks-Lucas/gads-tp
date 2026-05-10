@@ -42,6 +42,7 @@ import {
   CheckCircle2,
   XCircle,
   Download,
+  Info,
 } from "lucide-react"
 import {
   Dialog,
@@ -52,6 +53,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -117,6 +119,8 @@ const novedadColors: Record<TipoNovedad, string> = {
   cambioTurno: "bg-indigo-100 text-indigo-800",
   vacaciones: "bg-teal-100 text-teal-800",
   enfermedad: "bg-orange-100 text-orange-800",
+  mediaAusencia: "",
+  fichaIncompleta: ""
 }
 
 const novedadLabels: Record<TipoNovedad, string> = {
@@ -130,6 +134,8 @@ const novedadLabels: Record<TipoNovedad, string> = {
   cambioTurno: "Cambio de Turno",
   vacaciones: "Vacaciones",
   enfermedad: "Enfermedad",
+  mediaAusencia: "",
+  fichaIncompleta: ""
 }
 
 const modalidadFichadaLabels: Record<ModalidadFichada, string> = {
@@ -143,14 +149,23 @@ const modalidadFichadaLabels: Record<ModalidadFichada, string> = {
 const diasSemanaLabels = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
 
 interface ImportPreview {
-  fecha: string
-  hora: string
-  metodo: MetodoFichada
-  tipo: TipoFichada
   legajo: string
-  empleadoNombre: string
-  observaciones?: string
-  empleadoId?: string
+  nombre: string
+  apellido: string
+  dni: string
+  cuil: string
+  departamento: string
+  cargo: string
+  categoriaLaboral: string
+  convenio: string
+  tipoJornada: TipoJornada
+  fechaIngreso?: string
+  estado?: Employee["estado"]
+  email: string
+  telefono: string
+  turnoId?: string
+  diasDescanso: string
+  modalidadFichada: ModalidadFichada
   error?: string
 }
 
@@ -168,7 +183,6 @@ export function EmployeesView() {
     getNovedadesByEmployeeAndPeriod,
     getFichadasByEmployeeAndPeriod,
     getTurnoById,
-    addFichadasMasivas,
     isLoaded,
   } = useLMSData()
 
@@ -218,17 +232,31 @@ export function EmployeesView() {
     telefono: "",
     turnoId: "",
     diasDescanso: [0, 6] as number[],
-    modalidadFichada: "biometrico" as ModalidadFichada,
+    modalidadFichada: "todas" as ModalidadFichada,
   })
 
   // Turno form state
   const [turnoFormData, setTurnoFormData] = useState({
     nombre: "",
+    tipo: "fijo" as "fijo" | "rotativo" | "flexible",
+    toleranciaEntradaMinutos: 15,
+    toleranciaSalidaMinutos: 15,
+    umbralHorasExtra: 30,
+    // Para fijo
     horaEntrada: "08:00",
     horaSalida: "16:00",
-    toleranciaMinutos: 15,
-    tipo: "fijo" as "fijo" | "rotativo",
     diasSemana: [1, 2, 3, 4, 5],
+    // Para rotativo
+    fechaInicio: "",
+    fechaFin: "",
+    diasSemanaRotativo: [1, 2, 3, 4, 5],
+    configuracionesDiarias: [] as { dia: number; horaEntrada: string; horaSalida: string }[],
+    // Para flexible
+    horaEntradaInicio: "08:00",
+    horaEntradaFin: "10:00",
+    horaSalidaInicio: "16:00",
+    horaSalidaFin: "18:00",
+    horasTotales: 8,
   })
 
   const [selectedTurnoId, setSelectedTurnoId] = useState("")
@@ -304,7 +332,7 @@ export function EmployeesView() {
       telefono: "",
       turnoId: "",
       diasDescanso: [0, 6],
-      modalidadFichada: "biometrico",
+      modalidadFichada: "todas",
     })
     setEditingEmployee(null)
   }
@@ -328,7 +356,7 @@ export function EmployeesView() {
       telefono: employee.telefono,
       turnoId: employee.turnoId || "",
       diasDescanso: employee.diasDescanso || [0, 6],
-      modalidadFichada: employee.modalidadFichada || "biometrico",
+      modalidadFichada: employee.modalidadFichada || "todas",
     })
     setIsDialogOpen(true)
   }
@@ -363,11 +391,22 @@ export function EmployeesView() {
     addTurno(turnoFormData)
     setTurnoFormData({
       nombre: "",
+      tipo: "fijo",
+      toleranciaEntradaMinutos: 15,
+      toleranciaSalidaMinutos: 15,
+      umbralHorasExtra: 30,
       horaEntrada: "08:00",
       horaSalida: "16:00",
-      toleranciaMinutos: 15,
-      tipo: "fijo",
       diasSemana: [1, 2, 3, 4, 5],
+      fechaInicio: "",
+      fechaFin: "",
+      diasSemanaRotativo: [1, 2, 3, 4, 5],
+      configuracionesDiarias: [],
+      horaEntradaInicio: "08:00",
+      horaEntradaFin: "10:00",
+      horaSalidaInicio: "16:00",
+      horaSalidaFin: "18:00",
+      horasTotales: 8,
     })
     setIsTurnoDialogOpen(false)
   }
@@ -395,51 +434,183 @@ export function EmployeesView() {
         const workbook = XLSX.read(data, { type: "binary" })
         const sheetName = workbook.SheetNames[0]
         const worksheet = workbook.Sheets[sheetName]
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][]
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as unknown[][]
+        if (jsonData.length === 0) {
+          throw new Error("Archivo vacío")
+        }
 
-        // Skip header row and process data
+        const normalizeHeader = (value: unknown) =>
+          String(value || "")
+            .trim()
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, "")
+
+        const headerRow = jsonData[0] as unknown[]
+        const headerIndex: Record<string, number> = {}
+        headerRow.forEach((value, index) => {
+          headerIndex[normalizeHeader(value)] = index
+        })
+
+        const findHeader = (aliases: string[]) => {
+          const normalized = aliases.map(normalizeHeader)
+          const found = normalized.find((key) => headerIndex[key] !== undefined)
+          return found !== undefined ? headerIndex[found] : -1
+        }
+
+        const getCell = (row: unknown[], aliases: string[]) => {
+          const idx = findHeader(aliases)
+          return idx >= 0 ? row[idx] : undefined
+        }
+
+        const parseString = (value: unknown) => String(value ?? "").trim()
+
+        const parseDiasDescanso = (value: unknown): string => {
+          const text = parseString(value)
+          return text || "0,6"
+        }
+
+        const parseDiasDescansoArray = (value: unknown): number[] => {
+          const raw = parseDiasDescanso(value)
+          const dayMap: Record<string, number> = {
+            domingo: 0,
+            dom: 0,
+            d: 0,
+            lunes: 1,
+            lun: 1,
+            l: 1,
+            martes: 2,
+            mar: 2,
+            m: 2,
+            miercoles: 3,
+            miércoles: 3,
+            mie: 3,
+            mier: 3,
+            w: 3,
+            jueves: 4,
+            jue: 4,
+            j: 4,
+            viernes: 5,
+            vie: 5,
+            v: 5,
+            sabado: 6,
+            sábado: 6,
+            sab: 6,
+            s: 6,
+          }
+          return Array.from(
+            new Set(
+              raw
+                .split(/[,;|]/)
+                .map((segment) => segment.trim().toLowerCase())
+                .filter(Boolean)
+                .map((value) => {
+                  if (/^[0-6]$/.test(value)) return Number(value)
+                  return dayMap[value]
+                })
+                .filter((value): value is number => typeof value === "number")
+            )
+          )
+        }
+
+        const mapToTipoJornada = (value: unknown): TipoJornada => {
+          const normalized = parseString(value).toLowerCase()
+          return normalized === "parcial" ? "parcial" : "completa"
+        }
+
+        const parseEstado = (value: unknown): Employee["estado"] | undefined => {
+          const normalized = parseString(value).toLowerCase().trim()
+          if (!normalized) return undefined
+          if (normalized === "inactivo") return "inactivo"
+          if (normalized === "licencia") return "licencia"
+          if (normalized === "suspendido") return "suspendido"
+          if (normalized === "activo") return "activo"
+          return undefined
+        }
+
+        const mapToModalidadFichada = (value: unknown): ModalidadFichada => {
+          const normalized = parseString(value).toLowerCase()
+          if (normalized.includes("manual")) return "manual"
+          if (normalized.includes("tarjeta")) return "tarjeta"
+          if (normalized.includes("api")) return "api"
+          if (normalized.includes("todas")) return "todas"
+          return "biometrico"
+        }
+
         const preview: ImportPreview[] = []
+        const existingLegajos = new Set(employees.map((e) => e.legajo.toLowerCase()))
+        const seenLegajos = new Set<string>()
+
         for (let i = 1; i < jsonData.length; i++) {
-          const row = jsonData[i]
-          if (!row || row.length < 6) continue
+          const row = jsonData[i] as unknown[]
+          if (!row || row.length === 0) continue
 
-          const fecha = parseExcelDate(row[0])
-          const hora = parseExcelTime(row[1])
-          const formaRegistro = String(row[2] || "").toLowerCase()
-          const tipoRegistro = String(row[3] || "").toLowerCase()
-          const legajo = String(row[4] || "").trim()
-          const nombreCompleto = String(row[5] || "").trim()
-          const observaciones = row[6] ? String(row[6]) : undefined
+          const legajo = parseString(getCell(row, ["legajo", "codigo", "file", "id"]))
+          const nombre = parseString(getCell(row, ["nombre", "nombres"]))
+          const apellido = parseString(getCell(row, ["apellido", "apellidos"]))
+          const dni = parseString(getCell(row, ["dni"]))
+          const cuil = parseString(getCell(row, ["cuil"]))
+          const departamento = parseString(getCell(row, ["departamento", "area"]))
+          const cargo = parseString(getCell(row, ["cargo", "puesto"]))
+          const categoriaLaboral = parseString(getCell(row, ["categoria laboral", "categorialaboral", "categoria"]))
+          const convenio = parseString(getCell(row, ["convenio"]))
+          const tipoJornada = mapToTipoJornada(getCell(row, ["tipo jornada", "tipojornada", "jornada"]))
+          const fechaIngresoCell = getCell(row, ["fecha ingreso", "fechaingreso", "ingreso"])
+          const fechaIngreso = parseExcelDate(fechaIngresoCell)
+          const estadoRaw = parseString(getCell(row, ["estado", "situacion"]))
+          const estado = parseEstado(estadoRaw)
+          const email = parseString(getCell(row, ["email", "correo", "correo electronico", "correoelectronico"]))
+          const telefono = parseString(getCell(row, ["telefono", "teléfono", "celular"]))
+          const turnoId = parseString(getCell(row, ["turno id", "turnoid", "turno"])) || undefined
+          const diasDescansoValue = parseString(getCell(row, ["dias descanso", "diasdescanso", "descanso"]))
+          const diasDescanso = diasDescansoValue || "0,6"
+          const modalidadFichada = mapToModalidadFichada(getCell(row, ["modalidad fichada", "modalidadfichada", "modalidad"]))
 
-          // Map forma de registro to MetodoFichada
-          let metodo: MetodoFichada = "manual"
-          if (formaRegistro.includes("local") || formaRegistro.includes("biom")) {
-            metodo = "biometrico"
-          } else if (formaRegistro.includes("tarjeta")) {
-            metodo = "tarjeta"
-          } else if (formaRegistro.includes("api")) {
-            metodo = "api"
+          let error: string | undefined
+          if (!legajo) {
+            error = "Falta legajo"
+          } else if (!nombre) {
+            error = "Falta nombre"
+          } else if (!apellido) {
+            error = "Falta apellido"
+          } else if (!dni) {
+            error = "Falta DNI"
+          } else if (!cuil) {
+            error = "Falta CUIL"
+          } else if (!fechaIngreso) {
+            error = "Falta fecha de ingreso"
+          } else if (!estadoRaw) {
+            error = "Falta estado"
+          } else if (!estado) {
+            error = "Estado inválido"
+          } else if (existingLegajos.has(legajo.toLowerCase())) {
+            error = `Legajo ${legajo} ya existe`
+          } else if (seenLegajos.has(legajo.toLowerCase())) {
+            error = `Legajo ${legajo} está duplicado en el archivo`
           }
 
-          // Map tipo de registro to TipoFichada
-          let tipo: TipoFichada = "entrada"
-          if (tipoRegistro.includes("salida") || tipoRegistro.includes("egreso")) {
-            tipo = "salida"
-          }
-
-          // Find employee by legajo
-          const emp = employees.find((e) => e.legajo.toLowerCase() === legajo.toLowerCase())
+          seenLegajos.add(legajo.toLowerCase())
 
           preview.push({
-            fecha,
-            hora,
-            metodo,
-            tipo,
             legajo,
-            empleadoNombre: nombreCompleto,
-            observaciones,
-            empleadoId: emp?.id,
-            error: !emp ? `Empleado con legajo ${legajo} no encontrado` : undefined,
+            nombre,
+            apellido,
+            dni,
+            cuil,
+            departamento,
+            cargo,
+            categoriaLaboral,
+            convenio,
+            tipoJornada,
+            fechaIngreso,
+            estado,
+            email,
+            telefono,
+            turnoId,
+            diasDescanso,
+            modalidadFichada,
+            error,
           })
         }
 
@@ -452,72 +623,130 @@ export function EmployeesView() {
     }
 
     reader.readAsBinaryString(file)
-    // Reset input
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
   }
 
-  const parseExcelDate = (value: unknown): string => {
-    if (!value) return new Date().toISOString().split("T")[0]
-    
-    // If it's a number (Excel serial date)
-    if (typeof value === "number") {
-      const date = new Date((value - 25569) * 86400 * 1000)
-      return date.toISOString().split("T")[0]
-    }
-    
-    // If it's a string in format DD/MM/YYYY or similar
-    const strValue = String(value)
-    const parts = strValue.split(/[\/\-]/)
+  const normalizeDateString = (value: string): string | undefined => {
+    const rawValue = value.trim()
+    if (!rawValue) return undefined
+
+    const isoMatch = /^\d{4}-\d{2}-\d{2}$/.test(rawValue)
+    if (isoMatch) return rawValue
+
+    const parts = rawValue.split(/[\/\-]/).map((part) => part.trim())
     if (parts.length === 3) {
-      const day = parts[0].padStart(2, "0")
-      const month = parts[1].padStart(2, "0")
-      const year = parts[2].length === 2 ? `20${parts[2]}` : parts[2]
-      return `${year}-${month}-${day}`
+      let day = parts[0]
+      let month = parts[1]
+      let year = parts[2]
+
+      if (year.length === 2) year = `20${year}`
+
+      if (parts[0].length === 4) {
+        year = parts[0]
+        month = parts[1]
+        day = parts[2]
+      } else if (parts[2].length === 4) {
+        const first = Number(parts[0])
+        const second = Number(parts[1])
+        if (second > 12) {
+          day = parts[1]
+          month = parts[0]
+        } else {
+          day = parts[0]
+          month = parts[1]
+        }
+      }
+
+      const parsed = new Date(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T00:00:00`)
+      return isNaN(parsed.getTime())
+        ? undefined
+        : `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`
     }
-    
-    return new Date().toISOString().split("T")[0]
+
+    const parsed = new Date(rawValue)
+    return isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split("T")[0]
   }
 
-  const parseExcelTime = (value: unknown): string => {
-    if (!value) return "08:00"
-    
-    // If it's a decimal (Excel time)
+  const formatDisplayDate = (value?: string): string => {
+    if (!value) return ""
+    const normalized = normalizeDateString(value)
+    if (!normalized) return value
+    const [year, month, day] = normalized.split("-")
+    return `${day}/${month}/${year}`
+  }
+
+  const parseExcelDate = (value: unknown): string | undefined => {
+    if (value === null || value === undefined) return undefined
     if (typeof value === "number") {
-      const totalMinutes = Math.round(value * 24 * 60)
-      const hours = Math.floor(totalMinutes / 60)
-      const minutes = totalMinutes % 60
-      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`
+      const date = new Date((value - 25569) * 86400 * 1000)
+      return isNaN(date.getTime()) ? undefined : date.toISOString().split("T")[0]
     }
-    
-    // If it's a string
-    const strValue = String(value)
-    if (strValue.includes(":")) {
-      const parts = strValue.split(":")
-      return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}`
-    }
-    
-    return "08:00"
+
+    return normalizeDateString(String(value))
   }
 
   const handleConfirmImport = () => {
     setIsImporting(true)
-    
-    const validFichadas = importPreview
-      .filter((p) => p.empleadoId && !p.error)
-      .map((p) => ({
-        empleadoId: p.empleadoId!,
-        empleadoNombre: p.empleadoNombre,
-        tipo: p.tipo,
-        fecha: p.fecha,
-        hora: p.hora,
-        metodo: p.metodo,
-        observaciones: p.observaciones,
-      }))
 
-    if (validFichadas.length > 0) {
-      addFichadasMasivas(validFichadas)
+    const validEmployees = importPreview
+      .filter(
+        (p): p is ImportPreview & { fechaIngreso: string; estado: Employee["estado"] } =>
+          !p.error && p.fechaIngreso !== undefined && p.estado !== undefined
+      )
+      .map((p) => ({
+        legajo: p.legajo,
+        nombre: p.nombre,
+        apellido: p.apellido,
+        dni: p.dni,
+        cuil: p.cuil,
+        departamento: p.departamento,
+        cargo: p.cargo,
+        categoriaLaboral: p.categoriaLaboral,
+        convenio: p.convenio || "",
+        tipoJornada: p.tipoJornada,
+        fechaIngreso: p.fechaIngreso,
+        estado: p.estado,
+      email: p.email,
+      telefono: p.telefono,
+      turnoId: p.turnoId || undefined,
+      diasDescanso: (() => {
+        const result = p.diasDescanso
+          .split(/[,;|]/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .map((item) => {
+            const normalized = item.toLowerCase()
+            const map: Record<string, number> = {
+              domingo: 0,
+              dom: 0,
+              lunes: 1,
+              lun: 1,
+              martes: 2,
+              mar: 2,
+              miercoles: 3,
+              miércoles: 3,
+              mie: 3,
+              jueves: 4,
+              jue: 4,
+              viernes: 5,
+              vie: 5,
+              sabado: 6,
+              sábado: 6,
+              sab: 6,
+            }
+            if (/^[0-6]$/.test(item)) return Number(item)
+            return map[normalized] ?? -1
+          })
+          .filter((value) => value >= 0)
+        return result.length > 0 ? result : [0, 6]
+      })(),
+      modalidadFichada: p.modalidadFichada,
+    }))
+
+    if (validEmployees.length > 0) {
+      validEmployees.forEach((employee) => addEmployee(employee))
     }
 
     setIsImporting(false)
@@ -528,19 +757,57 @@ export function EmployeesView() {
 
   const downloadExcelTemplate = () => {
     const templateData = [
-      ["Fecha", "Hora", "Forma de Registro", "Tipo de Registro", "Legajo", "Empleado", "Observaciones"],
-      ["15/01/2024", "08:00", "Local", "Entrada", "EMP001", "Juan Pérez", ""],
-      ["15/01/2024", "17:00", "Local", "Salida", "EMP001", "Juan Pérez", ""],
-      ["15/01/2024", "08:15", "Manual", "Entrada", "EMP002", "María González", "Llegada tardía justificada"],
+      [
+        "Legajo",
+        "Nombre",
+        "Apellido",
+        "DNI",
+        "CUIL",
+        "Fecha Ingreso",
+        "Estado",
+        "Departamento",
+        "Cargo",
+        "Categoría Laboral",
+        "Convenio",
+        "Tipo Jornada",
+      ],
+      [
+        "EMP006",
+        "Laura",
+        "Gómez",
+        "30567890",
+        "27-30567890-3",
+        "02/01/2024",
+        "activo",
+        "Administración",
+        "Analista",
+        "Profesional",
+        "Empleados de Comercio",
+        "completa",
+      ],
+      [
+        "EMP007",
+        "Sebastián",
+        "Rossi",
+        "31234567",
+        "20-31234567-8",
+        "10/02/2024",
+        "activo",
+        "Producción",
+        "Operario",
+        "Operario Calificado",
+        "UOCRA",
+        "completa",
+      ],
     ]
-    
+
     const ws = XLSX.utils.aoa_to_sheet(templateData)
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, "Fichadas")
-    XLSX.writeFile(wb, "plantilla_fichadas.xlsx")
+    XLSX.utils.book_append_sheet(wb, ws, "Empleados")
+    XLSX.writeFile(wb, "plantilla_empleados.xlsx")
   }
 
-  const validImportCount = importPreview.filter((p) => p.empleadoId && !p.error).length
+  const validImportCount = importPreview.filter((p) => !p.error).length
   const errorImportCount = importPreview.filter((p) => p.error).length
 
   return (
@@ -561,10 +828,25 @@ export function EmployeesView() {
               accept=".xlsx,.xls"
               className="hidden"
             />
+            <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
               <Upload className="mr-2 h-4 w-4" />
-              Importar Excel
+              Importar Empleados
             </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-muted"
+                >
+                  <Info className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Formato esperado: Legajo, Nombre, Apellido, DNI, CUIL, Fecha Ingreso (dd/mm/aaaa), Estado, Departamento, Cargo, Categoría Laboral, Convenio, Tipo Jornada.
+              </TooltipContent>
+            </Tooltip>
+          </div>
 
             <Dialog open={isTurnoDialogOpen} onOpenChange={setIsTurnoDialogOpen}>
               <DialogTrigger asChild>
@@ -576,6 +858,9 @@ export function EmployeesView() {
               <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                   <DialogTitle>Gestión de Turnos</DialogTitle>
+                  <DialogDescription>
+                    Visualiza los turnos existentes y crea nuevos turnos para asignar a tus empleados.
+                  </DialogDescription>
                 </DialogHeader>
                 <Tabs defaultValue="list">
                   <TabsList className="grid w-full grid-cols-2">
@@ -596,16 +881,52 @@ export function EmployeesView() {
                           >
                             <div>
                               <p className="font-medium">{turno.nombre}</p>
-                              <p className="text-sm text-muted-foreground">
-                                {turno.horaEntrada} - {turno.horaSalida} | Tolerancia:{" "}
-                                {turno.toleranciaMinutos}min
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {turno.diasSemana.map((d) => diasSemanaLabels[d]).join(", ")}
-                              </p>
+                              {turno.fechaInicio && turno.fechaFin && (
+                                <p className="text-xs text-muted-foreground">
+                                  Vigente: {formatDisplayDate(turno.fechaInicio)} - {formatDisplayDate(turno.fechaFin)}
+                                </p>
+                              )}
+                              {(turno.tipo === "fijo" || turno.tipo === "reducida") ? (
+                                <>
+                                  <p className="text-sm text-muted-foreground">
+                                    {turno.horaEntrada} - {turno.horaSalida} | Tolerancia Entrada: {turno.toleranciaEntradaMinutos ?? 0}min | Salida: {turno.toleranciaSalidaMinutos ?? 0}min
+                                  </p>
+                                  <p className="text-sm text-muted-foreground">
+                                    Umbral horas extra: {turno.umbralHorasExtra ?? 0}min
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Días: {turno.diasSemana?.map((d) => diasSemanaLabels[d]).join(", ")}
+                                  </p>
+                                </>
+                              ) : (turno.tipo === "flexible") ? (
+                                <>
+                                  <p className="text-sm text-muted-foreground">
+                                    Entrada: {turno.horaEntradaInicio} - {turno.horaEntradaFin} | Salida: {turno.horaSalidaInicio} - {turno.horaSalidaFin}
+                                  </p>
+                                  <p className="text-sm text-muted-foreground">
+                                    Horas totales: {turno.horasTotales}h | Tolerancia Entrada: {turno.toleranciaEntradaMinutos ?? 0}min | Salida: {turno.toleranciaSalidaMinutos ?? 0}min
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Días: {turno.diasSemana?.map((d) => diasSemanaLabels[d]).join(", ")}
+                                  </p>
+                                </>
+                              ) : (
+                                <>
+                                  <p className="text-sm text-muted-foreground">
+                                    Tolerancia Entrada: {turno.toleranciaEntradaMinutos ?? 0}min | Salida: {turno.toleranciaSalidaMinutos ?? 0}min | Umbral horas extra: {turno.umbralHorasExtra ?? 0}min
+                                  </p>
+                                  <div className="text-xs text-muted-foreground">
+                                    {turno.configuracionesDiarias?.map((config) => (
+                                      <div key={config.dia}>
+                                        {diasSemanaLabels[config.dia]}: {config.horaEntrada} - {config.horaSalida}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
                             </div>
-                            <Badge variant={turno.tipo === "fijo" ? "secondary" : "outline"}>
-                              {turno.tipo === "fijo" ? "Fijo" : "Rotativo"}
+                            <Badge variant={(turno.tipo === "fijo" || turno.tipo === "reducida") ? "secondary" : turno.tipo === "rotativo" ? "outline" : "default"}>
+                              {turno.tipo === "fijo" ? "Fijo" : turno.tipo === "reducida" ? "Reducida" : turno.tipo === "rotativo" ? "Rotativo" : "Flexible"}
                             </Badge>
                           </div>
                         ))}
@@ -631,7 +952,7 @@ export function EmployeesView() {
                           <Select
                             value={turnoFormData.tipo}
                             onValueChange={(v) =>
-                              setTurnoFormData((p) => ({ ...p, tipo: v as "fijo" | "rotativo" }))
+                              setTurnoFormData((p) => ({ ...p, tipo: v as "fijo" | "rotativo" | "flexible" }))
                             }
                           >
                             <SelectTrigger>
@@ -640,71 +961,281 @@ export function EmployeesView() {
                             <SelectContent>
                               <SelectItem value="fijo">Fijo</SelectItem>
                               <SelectItem value="rotativo">Rotativo</SelectItem>
+                              <SelectItem value="flexible">Flexible con banda horaria</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
                       </div>
                       <div className="grid grid-cols-3 gap-4">
                         <div className="space-y-2">
-                          <Label>Hora Entrada</Label>
-                          <Input
-                            type="time"
-                            value={turnoFormData.horaEntrada}
-                            onChange={(e) =>
-                              setTurnoFormData((p) => ({ ...p, horaEntrada: e.target.value }))
-                            }
-                            required
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Hora Salida</Label>
-                          <Input
-                            type="time"
-                            value={turnoFormData.horaSalida}
-                            onChange={(e) =>
-                              setTurnoFormData((p) => ({ ...p, horaSalida: e.target.value }))
-                            }
-                            required
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Tolerancia (min)</Label>
+                          <Label>Tolerancia Entrada (min)</Label>
                           <Input
                             type="number"
-                            value={turnoFormData.toleranciaMinutos}
+                            value={turnoFormData.toleranciaEntradaMinutos}
                             onChange={(e) =>
                               setTurnoFormData((p) => ({
                                 ...p,
-                                toleranciaMinutos: parseInt(e.target.value),
+                                toleranciaEntradaMinutos: parseInt(e.target.value),
+                              }))
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Tolerancia Salida (min)</Label>
+                          <Input
+                            type="number"
+                            value={turnoFormData.toleranciaSalidaMinutos}
+                            onChange={(e) =>
+                              setTurnoFormData((p) => ({
+                                ...p,
+                                toleranciaSalidaMinutos: parseInt(e.target.value),
+                              }))
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Umbral Horas Extra (min)</Label>
+                          <Input
+                            type="number"
+                            value={turnoFormData.umbralHorasExtra}
+                            onChange={(e) =>
+                              setTurnoFormData((p) => ({
+                                ...p,
+                                umbralHorasExtra: parseInt(e.target.value),
                               }))
                             }
                             required
                           />
                         </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label>Días de la Semana</Label>
-                        <div className="flex gap-2">
-                          {diasSemanaLabels.map((dia, index) => (
-                            <Button
-                              key={index}
-                              type="button"
-                              size="sm"
-                              variant={
-                                turnoFormData.diasSemana.includes(index) ? "default" : "outline"
-                              }
-                              onClick={() => {
-                                const newDias = turnoFormData.diasSemana.includes(index)
-                                  ? turnoFormData.diasSemana.filter((d) => d !== index)
-                                  : [...turnoFormData.diasSemana, index]
-                                setTurnoFormData((p) => ({ ...p, diasSemana: newDias }))
-                              }}
-                            >
-                              {dia}
-                            </Button>
-                          ))}
+                      {turnoFormData.tipo === "fijo" ? (
+                        <>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Hora Entrada</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaEntrada}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaEntrada: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Hora Salida</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaSalida}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaSalida: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Días de la Semana</Label>
+                            <div className="flex gap-2">
+                              {diasSemanaLabels.map((dia, index) => (
+                                <Button
+                                  key={index}
+                                  type="button"
+                                  size="sm"
+                                  variant={
+                                    turnoFormData.diasSemana.includes(index) ? "default" : "outline"
+                                  }
+                                  onClick={() => {
+                                    const newDias = turnoFormData.diasSemana.includes(index)
+                                      ? turnoFormData.diasSemana.filter((d) => d !== index)
+                                      : [...turnoFormData.diasSemana, index]
+                                    setTurnoFormData((p) => ({ ...p, diasSemana: newDias }))
+                                  }}
+                                >
+                                  {dia}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      ) : (turnoFormData.tipo === "flexible") ? (
+                        <>
+                          <div className="grid grid-cols-4 gap-4">
+                            <div className="space-y-2">
+                              <Label>Rango Entrada Inicio</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaEntradaInicio}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaEntradaInicio: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Rango Entrada Fin</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaEntradaFin}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaEntradaFin: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Rango Salida Inicio</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaSalidaInicio}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaSalidaInicio: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Rango Salida Fin</Label>
+                              <Input
+                                type="time"
+                                value={turnoFormData.horaSalidaFin}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, horaSalidaFin: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Horas Totales (horas)</Label>
+                              <Input
+                                type="number"
+                                value={turnoFormData.horasTotales}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({
+                                    ...p,
+                                    horasTotales: parseFloat(e.target.value),
+                                  }))
+                                }
+                                required
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Días de la Semana</Label>
+                            <div className="flex gap-2">
+                              {diasSemanaLabels.map((dia, index) => (
+                                <Button
+                                  key={index}
+                                  type="button"
+                                  size="sm"
+                                  variant={
+                                    turnoFormData.diasSemana.includes(index) ? "default" : "outline"
+                                  }
+                                  onClick={() => {
+                                    const newDias = turnoFormData.diasSemana.includes(index)
+                                      ? turnoFormData.diasSemana.filter((d) => d !== index)
+                                      : [...turnoFormData.diasSemana, index]
+                                    setTurnoFormData((p) => ({ ...p, diasSemana: newDias }))
+                                  }}
+                                >
+                                  {dia}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label>Fecha Inicio</Label>
+                              <Input
+                                type="date"
+                                value={turnoFormData.fechaInicio}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, fechaInicio: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Fecha Fin</Label>
+                              <Input
+                                type="date"
+                                value={turnoFormData.fechaFin}
+                                onChange={(e) =>
+                                  setTurnoFormData((p) => ({ ...p, fechaFin: e.target.value }))
+                                }
+                                required
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Días de la Semana</Label>
+                            <div className="flex gap-2">
+                              {diasSemanaLabels.map((dia, index) => (
+                                <Button
+                                  key={index}
+                                  type="button"
+                                  size="sm"
+                                  variant={
+                                    turnoFormData.diasSemanaRotativo.includes(index) ? "default" : "outline"
+                                  }
+                                  onClick={() => {
+                                    const newDias = turnoFormData.diasSemanaRotativo.includes(index)
+                                      ? turnoFormData.diasSemanaRotativo.filter((d) => d !== index)
+                                      : [...turnoFormData.diasSemanaRotativo, index]
+                                    // Limpiar configuraciones de días no seleccionados
+                                    const newConfig = turnoFormData.configuracionesDiarias.filter(c => newDias.includes(c.dia))
+                                    setTurnoFormData((p) => ({ ...p, diasSemanaRotativo: newDias, configuracionesDiarias: newConfig }))
+                                  }}
+                                >
+                                  {dia}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                          <Label>Horarios por Día</Label>
+                          {turnoFormData.diasSemanaRotativo.map((dia) => {
+                            const config = turnoFormData.configuracionesDiarias.find(c => c.dia === dia)
+                            return (
+                              <div key={dia} className="grid grid-cols-3 gap-4 items-center">
+                                <span className="font-medium">{diasSemanaLabels[dia]}</span>
+                                <Input
+                                  type="time"
+                                  placeholder="Entrada"
+                                  value={config?.horaEntrada || ""}
+                                  onChange={(e) => {
+                                    const newConfig = turnoFormData.configuracionesDiarias.filter(c => c.dia !== dia)
+                                    if (e.target.value) {
+                                      newConfig.push({ dia, horaEntrada: e.target.value, horaSalida: config?.horaSalida || "" })
+                                    }
+                                    setTurnoFormData((p) => ({ ...p, configuracionesDiarias: newConfig }))
+                                  }}
+                                  required
+                                />
+                                <Input
+                                  type="time"
+                                  placeholder="Salida"
+                                  value={config?.horaSalida || ""}
+                                  onChange={(e) => {
+                                    const newConfig = turnoFormData.configuracionesDiarias.filter(c => c.dia !== dia)
+                                    if (e.target.value) {
+                                      newConfig.push({ dia, horaEntrada: config?.horaEntrada || "", horaSalida: e.target.value })
+                                    }
+                                    setTurnoFormData((p) => ({ ...p, configuracionesDiarias: newConfig }))
+                                  }}
+                                  required
+                                />
+                              </div>
+                            )
+                          })}
                         </div>
-                      </div>
+                      )}
                       <Button type="submit" className="w-full">
                         Crear Turno
                       </Button>
@@ -994,7 +1525,7 @@ export function EmployeesView() {
                             <SelectItem value="sin_turno">Sin turno asignado</SelectItem>
                             {turnos.map((turno) => (
                               <SelectItem key={turno.id} value={turno.id}>
-                                {turno.nombre} ({turno.horaEntrada} - {turno.horaSalida})
+                                {turno.nombre}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -1002,48 +1533,6 @@ export function EmployeesView() {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label>Días de Descanso</Label>
-                      <div className="flex gap-2">
-                        {diasSemanaLabels.map((dia, index) => (
-                          <Button
-                            key={index}
-                            type="button"
-                            size="sm"
-                            variant={formData.diasDescanso.includes(index) ? "default" : "outline"}
-                            onClick={() => {
-                              const newDias = formData.diasDescanso.includes(index)
-                                ? formData.diasDescanso.filter((d) => d !== index)
-                                : [...formData.diasDescanso, index]
-                              setFormData((prev) => ({ ...prev, diasDescanso: newDias }))
-                            }}
-                          >
-                            {dia}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Modalidad de Fichada Habilitada *</Label>
-                      <Select
-                        value={formData.modalidadFichada}
-                        onValueChange={(v) =>
-                          setFormData((prev) => ({ ...prev, modalidadFichada: v as ModalidadFichada }))
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="biometrico">Solo Biométrico</SelectItem>
-                          <SelectItem value="tarjeta">Solo Tarjeta</SelectItem>
-                          <SelectItem value="manual">Solo Manual</SelectItem>
-                          <SelectItem value="api">Solo API</SelectItem>
-                          <SelectItem value="todas">Todas las modalidades</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
                   </div>
 
                   <DialogFooter className="gap-2 sm:gap-0">
@@ -1138,13 +1627,14 @@ export function EmployeesView() {
                   <TableHead>Cargo</TableHead>
                   <TableHead>Jornada</TableHead>
                   <TableHead>Estado</TableHead>
+                  <TableHead>Estado Turno</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredEmployees.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                       No se encontraron empleados
                     </TableCell>
                   </TableRow>
@@ -1172,6 +1662,11 @@ export function EmployeesView() {
                       <TableCell>
                         <Badge className={estadoColors[emp.estado] || "bg-gray-100"}>
                           {estadoLabels[emp.estado] || emp.estado}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={emp.estadoTurno === "actualizado" ? "secondary" : "destructive"}>
+                          {emp.estadoTurno === "actualizado" ? "Actualizado" : "Desactualizado"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -1274,19 +1769,14 @@ export function EmployeesView() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Ingreso:</span>{" "}
-                  {selectedEmployee.fechaIngreso}
+                  {formatDisplayDate(selectedEmployee.fechaIngreso)}
                 </div>
-              </div>
-
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-muted-foreground">Turno:</span>
-                {selectedEmployee.turnoId ? (
+                <div>
+                  <span className="text-muted-foreground">Turno:</span>{" "}
                   <Badge variant="outline">
-                    {getTurnoById(selectedEmployee.turnoId)?.nombre || "Sin asignar"}
+                    {selectedEmployee.turnoId ? getTurnoById(selectedEmployee.turnoId)?.nombre : "Sin asignar"}
                   </Badge>
-                ) : (
-                  <span>Sin asignar</span>
-                )}
+                </div>
               </div>
 
               {/* Period Selector */}
@@ -1379,7 +1869,7 @@ export function EmployeesView() {
                         {novedadLabels[nov.tipo] || nov.tipo}
                       </Badge>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-muted-foreground">{nov.fecha}</p>
+                        <p className="text-xs text-muted-foreground">{formatDisplayDate(nov.fecha)}</p>
                         <p className="text-sm truncate">{nov.descripcion}</p>
                       </div>
                     </div>
@@ -1394,28 +1884,35 @@ export function EmployeesView() {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium">Últimas Fichadas</CardTitle>
             </CardHeader>
-            <CardContent>
+              <CardContent>
               {selectedFichadas.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   Sin fichadas en este período
                 </p>
               ) : (
                 <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                  <div className="grid grid-cols-[120px_90px_100px_90px] gap-2 px-2 pb-2 text-xs uppercase tracking-wide text-muted-foreground border-b">
+                    <span>Fecha</span>
+                    <span>Hora</span>
+                    <span>Tipo</span>
+                    <span>Estado</span>
+                  </div>
                   {selectedFichadas.map((fich) => (
                     <div
                       key={fich.id}
-                      className="flex items-center justify-between py-1 text-sm border-b last:border-0"
+                      className="grid grid-cols-[120px_90px_100px_90px] gap-2 items-center py-2 px-2 text-sm border-b last:border-0"
                     >
-                      <span className="text-muted-foreground">{fich.fecha}</span>
+                      <span className="text-muted-foreground">{formatDisplayDate(fich.fecha)}</span>
                       <span className="font-mono">{fich.hora}</span>
                       <Badge variant="outline" className="text-xs">
                         {fich.tipo === "entrada" ? "Entrada" : "Salida"}
                       </Badge>
-                      {fich.esTardanza && (
-                        <Badge variant="destructive" className="text-xs">
-                          Tarde
-                        </Badge>
-                      )}
+                      <Badge
+                        variant={fich.esTardanza ? "destructive" : "secondary"}
+                        className="text-xs"
+                      >
+                        {fich.esTardanza ? "Tarde" : "Normal"}
+                      </Badge>
                     </div>
                   ))}
                 </div>
@@ -1457,7 +1954,7 @@ export function EmployeesView() {
                   <SelectContent>
                     {turnos.map((turno) => (
                       <SelectItem key={turno.id} value={turno.id}>
-                        {turno.nombre} ({turno.horaEntrada} - {turno.horaSalida})
+                        {turno.nombre}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1483,7 +1980,7 @@ export function EmployeesView() {
                         className="h-4 w-4"
                       />
                       <label htmlFor={`rot-${turno.id}`} className="text-sm">
-                        {turno.nombre} ({turno.horaEntrada} - {turno.horaSalida})
+                        {turno.nombre}
                       </label>
                     </div>
                   ))}
@@ -1538,12 +2035,17 @@ export function EmployeesView() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileSpreadsheet className="h-5 w-5" />
-              Importar Fichadas desde Excel
+              Importar Empleados desde Excel
             </DialogTitle>
             <DialogDescription>
-              Archivo: {importFileName}
+              Archivo: {importFileName || "Ninguno"}
             </DialogDescription>
           </DialogHeader>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+            <p className="font-medium">Formato de archivo esperado:</p>
+            <p>Columnas obligatorias: Legajo, Nombre, Apellido, DNI, CUIL, Fecha Ingreso, Estado.</p>
+            <p>Columnas opcionales: Departamento, Cargo, Categoría Laboral, Convenio, Tipo Jornada.</p>
+          </div>
           <div className="space-y-4">
             <div className="flex items-center gap-4 p-3 bg-muted rounded-lg">
               <div className="flex items-center gap-2 text-green-600">
@@ -1562,30 +2064,24 @@ export function EmployeesView() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead>Hora</TableHead>
-                    <TableHead>Método</TableHead>
-                    <TableHead>Tipo</TableHead>
                     <TableHead>Legajo</TableHead>
-                    <TableHead>Empleado</TableHead>
+                    <TableHead>Nombre</TableHead>
+                    <TableHead>Apellido</TableHead>
+                    <TableHead>Departamento</TableHead>
                     <TableHead>Estado</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Resultado</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {importPreview.map((row, index) => (
                     <TableRow key={index} className={row.error ? "bg-red-50" : ""}>
-                      <TableCell>{row.fecha}</TableCell>
-                      <TableCell>{row.hora}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{row.metodo}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={row.tipo === "entrada" ? "default" : "secondary"}>
-                          {row.tipo === "entrada" ? "Entrada" : "Salida"}
-                        </Badge>
-                      </TableCell>
                       <TableCell className="font-mono">{row.legajo}</TableCell>
-                      <TableCell>{row.empleadoNombre}</TableCell>
+                      <TableCell>{row.nombre}</TableCell>
+                      <TableCell>{row.apellido}</TableCell>
+                      <TableCell>{row.departamento}</TableCell>
+                      <TableCell>{row.estado}</TableCell>
+                      <TableCell>{row.email}</TableCell>
                       <TableCell>
                         {row.error ? (
                           <span className="text-xs text-red-600">{row.error}</span>
@@ -1609,7 +2105,7 @@ export function EmployeesView() {
                   Cancelar
                 </Button>
                 <Button onClick={handleConfirmImport} disabled={validImportCount === 0 || isImporting}>
-                  {isImporting ? "Importando..." : `Importar ${validImportCount} fichadas`}
+                  {isImporting ? "Importando..." : `Importar ${validImportCount} empleados`}
                 </Button>
               </div>
             </div>

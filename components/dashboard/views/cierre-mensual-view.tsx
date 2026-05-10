@@ -739,7 +739,7 @@ export function CierreMensualView() {
                       <div className="min-w-0 flex-1">
                         <p className="text-xs truncate">{novedad.descripcion}</p>
                         <p className="text-xs text-muted-foreground">
-                          {new Date(novedad.fecha).toLocaleDateString("es-AR")}
+                          {new Date(`${novedad.fecha}T00:00:00`).toLocaleDateString("es-AR")}
                         </p>
                       </div>
                     </div>

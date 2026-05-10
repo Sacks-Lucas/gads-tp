@@ -45,15 +45,20 @@ import {
   Check,
   X,
   TrendingUp,
+  Upload,
+  Info,
 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import * as XLSX from "xlsx"
 
 const tipoFichadaLabels: Record<TipoFichada, string> = {
   entrada: "Entrada",
@@ -101,6 +106,8 @@ const tipoNovedadLabels: Record<TipoNovedad, string> = {
   cambioTurno: "Cambio de Turno",
   vacaciones: "Vacaciones",
   enfermedad: "Enfermedad",
+  mediaAusencia: "",
+  fichaIncompleta: ""
 }
 
 const tipoNovedadColors: Record<TipoNovedad, string> = {
@@ -114,6 +121,59 @@ const tipoNovedadColors: Record<TipoNovedad, string> = {
   cambioTurno: "bg-indigo-100 text-indigo-800",
   vacaciones: "bg-teal-100 text-teal-800",
   enfermedad: "bg-orange-100 text-orange-800",
+  mediaAusencia: "",
+  fichaIncompleta: ""
+}
+
+const normalizeDateString = (value: string): string | undefined => {
+  const rawValue = value.trim()
+  if (!rawValue) return undefined
+
+  const isoMatch = /^\d{4}-\d{2}-\d{2}$/.test(rawValue)
+  if (isoMatch) return rawValue
+
+  const parts = rawValue.split(/[\/\-]/).map((part) => part.trim())
+  if (parts.length === 3) {
+    let day = parts[0]
+    let month = parts[1]
+    let year = parts[2]
+
+    if (year.length === 2) year = `20${year}`
+
+    if (parts[0].length === 4) {
+      year = parts[0]
+      month = parts[1]
+      day = parts[2]
+    } else if (parts[2].length === 4) {
+      const first = Number(parts[0])
+      const second = Number(parts[1])
+      if (second > 12) {
+        day = parts[1]
+        month = parts[0]
+      } else {
+        day = parts[0]
+        month = parts[1]
+      }
+    }
+
+    const parsed = new Date(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T00:00:00`)
+    return isNaN(parsed.getTime())
+      ? undefined
+      : `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`
+  }
+
+  const parsed = new Date(rawValue)
+  return isNaN(parsed.getTime()) ? undefined : parsed.toISOString().split("T")[0]
+}
+
+const parseExcelDate = (value: unknown): string | undefined => {
+  if (value === null || value === undefined) return undefined
+  if (typeof value === "number") {
+    const date = new Date((value - 25569) * 86400 * 1000)
+    return isNaN(date.getTime()) ? undefined : date.toISOString().split("T")[0]
+  }
+
+  return normalizeDateString(String(value))
 }
 
 export function FichadasView() {
@@ -121,6 +181,7 @@ export function FichadasView() {
     employees,
     fichadas,
     addFichada,
+    addFichadasMasivas,
     deleteFichada,
     getFichadasHoy,
     novedades,
@@ -135,6 +196,7 @@ export function FichadasView() {
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isNovedadDialogOpen, setIsNovedadDialogOpen] = useState(false)
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false)
   const [filterDate, setFilterDate] = useState(new Date().toISOString().split("T")[0])
   const [activeTab, setActiveTab] = useState("fichadas")
 
@@ -153,6 +215,11 @@ export function FichadasView() {
   const [novedadFecha, setNovedadFecha] = useState(new Date().toISOString().split("T")[0])
   const [novedadFechaFin, setNovedadFechaFin] = useState("")
   const [novedadDescripcion, setNovedadDescripcion] = useState("")
+
+  // Import state
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importPreview, setImportPreview] = useState<any[]>([])
+  const [importErrors, setImportErrors] = useState<string[]>([])
 
   if (!isLoaded) {
     return <div className="flex items-center justify-center h-64">Cargando...</div>
@@ -222,6 +289,80 @@ export function FichadasView() {
     setIsNovedadDialogOpen(false)
   }
 
+  const handleImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setImportFile(file)
+    setImportErrors([])
+
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer)
+        const workbook = XLSX.read(data, { type: "array" })
+        const sheetName = workbook.SheetNames[0]
+        const worksheet = workbook.Sheets[sheetName]
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+
+        // Skip header row
+        const rows = jsonData.slice(1) as any[][]
+
+        const preview = rows.map((row, index) => {
+          const empleadoId = row[0]?.toString().trim()
+          const tipo = row[1]?.toString().trim().toLowerCase()
+          const fecha = parseExcelDate(row[2])
+          const hora = row[3]?.toString().trim()
+          const metodo = row[4]?.toString().trim().toLowerCase() || "manual"
+          const ubicacion = row[5]?.toString().trim() || "Importado"
+          const observaciones = row[6]?.toString().trim() || ""
+
+          const employee = employees.find((emp) => emp.id === empleadoId || emp.legajo === empleadoId)
+          const empleadoNombre = employee ? `${employee.nombre} ${employee.apellido}` : "Empleado no encontrado"
+
+          return {
+            empleadoId: employee ? employee.id : empleadoId,
+            empleadoNombre,
+            tipo,
+            fecha,
+            hora,
+            metodo,
+            ubicacion,
+            observaciones,
+            valid: !!employee && ["entrada", "salida", "iniciobreak", "finbreak"].includes(tipo) && !!fecha,
+          }
+        })
+
+        setImportPreview(preview)
+      } catch (error) {
+        setImportErrors(["Error al procesar el archivo Excel"])
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const handleImportFichadas = () => {
+    const validFichadas = importPreview.filter((p) => p.valid).map((p) => ({
+      empleadoId: p.empleadoId,
+      empleadoNombre: p.empleadoNombre,
+      tipo: p.tipo as TipoFichada,
+      fecha: p.fecha,
+      hora: p.hora,
+      ubicacion: p.ubicacion,
+      observaciones: p.observaciones,
+      metodo: p.metodo as MetodoFichada,
+    }))
+
+    if (validFichadas.length > 0) {
+      addFichadasMasivas(validFichadas)
+    }
+
+    setIsImportDialogOpen(false)
+    setImportFile(null)
+    setImportPreview([])
+    setImportErrors([])
+  }
+
   const quickFichada = (tipo: TipoFichada, metodo: MetodoFichada = "biometrico") => {
     if (!selectedEmployee) return
     const employee = employees.find((emp) => emp.id === selectedEmployee)
@@ -259,6 +400,9 @@ export function FichadasView() {
             <DialogContent className="sm:max-w-[500px]">
               <DialogHeader>
                 <DialogTitle>Registrar Novedad</DialogTitle>
+                <DialogDescription>
+                  Ingresa los datos de la novedad para actualizar el estado del empleado.
+                </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmitNovedad} className="space-y-4 pt-4">
                 <div className="space-y-2">
@@ -358,6 +502,9 @@ export function FichadasView() {
             <DialogContent className="sm:max-w-[500px]">
               <DialogHeader>
                 <DialogTitle>Registrar Nueva Fichada</DialogTitle>
+                <DialogDescription>
+                  Completa los datos de la fichada para registrar entrada, salida o break.
+                </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmitFichada} className="space-y-4 pt-4">
                 <div className="space-y-2">
@@ -645,12 +792,138 @@ export function FichadasView() {
                     Interpretación automática de tardanzas y horas extra según turno asignado
                   </CardDescription>
                 </div>
-                <Input
-                  type="date"
-                  value={filterDate}
-                  onChange={(e) => setFilterDate(e.target.value)}
-                  className="w-auto"
-                />
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="date"
+                    value={filterDate}
+                    onChange={(e) => setFilterDate(e.target.value)}
+                    className="w-auto"
+                  />
+                  <Dialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen}>
+                    <div className="flex items-center gap-2">
+                    <DialogTrigger asChild>
+                      <Button variant="outline">
+                        <Upload className="mr-2 h-4 w-4" />
+                        Importar Fichadas
+                      </Button>
+                    </DialogTrigger>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-muted"
+                        >
+                          <Info className="h-4 w-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        Formato esperado: Empleado ID, Tipo, Fecha (dd/mm/aaaa), Hora, Método (opcional), Ubicación (opcional), Observaciones (opcional).
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                    <DialogContent className="sm:max-w-[800px]">
+                      <DialogHeader>
+                        <DialogTitle>Importar Fichadas desde Excel</DialogTitle>
+                        <DialogDescription>
+                          Sube un archivo Excel con las fichadas a importar. El archivo debe tener las columnas: Empleado ID, Tipo, Fecha, Hora, Método (opcional), Ubicación (opcional), Observaciones (opcional).
+                          <br />
+                          <a href="/plantilla_fichadas.xlsx" download className="text-blue-600 underline">
+                            Descargar plantilla de ejemplo
+                          </a>
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Archivo Excel</Label>
+                          <Input
+                            type="file"
+                            accept=".xlsx,.xls"
+                            onChange={handleImportFileChange}
+                          />
+                        </div>
+                        {importPreview.length > 0 && (
+                          <div className="space-y-2">
+                            <Label>Preview de Importación</Label>
+                            <div className="max-h-60 overflow-y-auto border rounded p-2">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Empleado</TableHead>
+                                    <TableHead>Tipo</TableHead>
+                                    <TableHead>Fecha</TableHead>
+                                    <TableHead>Hora</TableHead>
+                                    <TableHead>Estado</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {importPreview.slice(0, 10).map((p, index) => (
+                                    <TableRow key={index}>
+                                      <TableCell>{p.empleadoNombre}</TableCell>
+                                      <TableCell>{p.tipo}</TableCell>
+                                      <TableCell>{p.fecha}</TableCell>
+                                      <TableCell>{p.hora}</TableCell>
+                                      <TableCell>
+                                        {p.valid ? (
+                                          <Badge variant="outline" className="border-green-300 text-green-700">
+                                            <Check className="mr-1 h-3 w-3" />
+                                            OK
+                                          </Badge>
+                                        ) : (
+                                          <Badge variant="outline" className="border-red-300 text-red-700">
+                                            <X className="mr-1 h-3 w-3" />
+                                            Error
+                                          </Badge>
+                                        )}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                              {importPreview.length > 10 && (
+                                <p className="text-sm text-muted-foreground mt-2">
+                                  Mostrando 10 de {importPreview.length} filas...
+                                </p>
+                              )}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Válidas: {importPreview.filter(p => p.valid).length} | Errores: {importPreview.filter(p => !p.valid).length}
+                            </div>
+                          </div>
+                        )}
+                        {importErrors.length > 0 && (
+                          <div className="space-y-2">
+                            <Label className="text-red-600">Errores</Label>
+                            <ul className="text-sm text-red-600">
+                              {importErrors.map((error, index) => (
+                                <li key={index}>• {error}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setIsImportDialogOpen(false)
+                            setImportFile(null)
+                            setImportPreview([])
+                            setImportErrors([])
+                          }}
+                        >
+                          Cancelar
+                        </Button>
+                        <Button
+                          onClick={handleImportFichadas}
+                          disabled={importPreview.filter(p => p.valid).length === 0}
+                        >
+                          Importar {importPreview.filter(p => p.valid).length} Fichadas
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -786,11 +1059,11 @@ export function FichadasView() {
                       novedades.slice(0, 20).map((novedad) => (
                         <TableRow key={novedad.id}>
                           <TableCell className="font-mono">
-                            {new Date(novedad.fecha).toLocaleDateString("es-AR")}
+                            {new Date(`${novedad.fecha}T00:00:00`).toLocaleDateString("es-AR")}
                             {novedad.fechaFin && (
                               <span className="text-muted-foreground">
                                 {" "}
-                                - {new Date(novedad.fechaFin).toLocaleDateString("es-AR")}
+                                - {new Date(`${novedad.fechaFin}T00:00:00`).toLocaleDateString("es-AR")}
                               </span>
                             )}
                           </TableCell>

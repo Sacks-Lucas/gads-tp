@@ -18,6 +18,8 @@ const tipoNovedadLabels: Record<TipoNovedad, string> = {
   cambioTurno: "Cambio Turno",
   vacaciones: "Vacaciones",
   enfermedad: "Enfermedad",
+  mediaAusencia: "",
+  fichaIncompleta: ""
 }
 
 const tipoNovedadColors: Record<TipoNovedad, string> = {
@@ -31,16 +33,57 @@ const tipoNovedadColors: Record<TipoNovedad, string> = {
   cambioTurno: "bg-indigo-100 text-indigo-800",
   vacaciones: "bg-teal-100 text-teal-800",
   enfermedad: "bg-orange-100 text-orange-800",
+  mediaAusencia: "",
+  fichaIncompleta: ""
 }
 
 export function DashboardView() {
-  const { getStats, fichadas, novedades, isLoaded } = useLMSData()
+  const { getStats, fichadas, novedades, employees, isLoaded } = useLMSData()
   
   if (!isLoaded) {
     return <div className="flex items-center justify-center h-64">Cargando...</div>
   }
 
   const stats = getStats()
+
+  const isJustifiedNonAttendance = (tipo: string) =>
+    ["ausencia", "licencia", "vacaciones", "enfermedad", "suspension", "feriado", "justificativo"].includes(
+      tipo
+    )
+
+  const getDayAbsences = (dateStr: string) => {
+    const date = new Date(`${dateStr}T00:00:00`)
+    date.setHours(0, 0, 0, 0)
+    const weekday = date.getDay()
+
+    return employees.reduce((count, employee) => {
+      if (employee.estado !== "activo") return count
+
+      const fechaIngreso = new Date(`${employee.fechaIngreso}T00:00:00`)
+      fechaIngreso.setHours(0, 0, 0, 0)
+      if (date < fechaIngreso) return count
+
+      if (employee.fechaBaja) {
+        const fechaBaja = new Date(`${employee.fechaBaja}T00:00:00`)
+        fechaBaja.setHours(0, 0, 0, 0)
+        if (date > fechaBaja) return count
+      }
+
+      if (employee.diasDescanso?.includes(weekday)) return count
+
+      const hasEntrada = fichadas.some(
+        (f) => f.empleadoId === employee.id && f.fecha === dateStr && f.tipo === "entrada"
+      )
+      if (hasEntrada) return count
+
+      const hasJustified = novedades.some(
+        (n) => n.empleadoId === employee.id && n.fecha === dateStr && isJustifiedNonAttendance(n.tipo)
+      )
+      if (hasJustified) return count
+
+      return count + 1
+    }, 0)
+  }
 
   // Generate chart data for last 7 days
   const chartData = []
@@ -49,17 +92,18 @@ export function DashboardView() {
     date.setDate(date.getDate() - i)
     const dateStr = date.toISOString().split("T")[0]
     const dayFichadas = fichadas.filter((f) => f.fecha === dateStr)
-    
+    const dayAusencias = getDayAbsences(dateStr)
+
     const presentes = new Set(
       dayFichadas.filter((f) => f.tipo === "entrada").map((f) => f.empleadoId)
     ).size
-    
-    const ausencias = stats.totalEmpleados - presentes
-    
+
     chartData.push({
-      day: date.toLocaleDateString("es-AR", { weekday: "short" }),
+      day: `${date.toLocaleDateString("es-AR", {
+      weekday: "short",
+      })}\n${date.getDate()}`,
       Asistencias: presentes,
-      Ausencias: Math.max(0, ausencias),
+      Ausencias: dayAusencias,
     })
   }
 
@@ -134,12 +178,12 @@ export function DashboardView() {
                   <Legend />
                   <Bar 
                     dataKey="Asistencias" 
-                    fill="hsl(var(--primary))" 
+                    fill="#3b82f6" 
                     radius={[4, 4, 0, 0]}
                   />
                   <Bar 
                     dataKey="Ausencias" 
-                    fill="hsl(var(--destructive))" 
+                    fill="#ef4444" 
                     radius={[4, 4, 0, 0]}
                   />
                 </BarChart>
@@ -184,7 +228,7 @@ export function DashboardView() {
                       </div>
                       <p className="text-sm text-muted-foreground">{novedad.descripcion}</p>
                       <p className="text-xs text-muted-foreground">
-                        {new Date(novedad.fecha).toLocaleDateString("es-AR")}
+                        {new Date(`${novedad.fecha}T00:00:00`).toLocaleDateString("es-AR")}
                       </p>
                     </div>
                     {!novedad.aprobado && (
