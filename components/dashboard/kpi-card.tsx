@@ -17,7 +17,6 @@ interface KPICardProps {
 }
 
 export function KPICard({ title, value, icon: Icon, trend, className }: KPICardProps) {
-  console.log("solo molesto")
   return (
     <Card className={cn("overflow-hidden", className)}>
       <CardContent className="p-6">
